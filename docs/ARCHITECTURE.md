@@ -6,7 +6,7 @@ It is run as a source script; this repository is not a pip distribution.
 | Module | Responsibility |
 | --- | --- |
 | `core.py` | Fixed paths/executables, bounded invocation, shared logging |
-| `checks.py` | Deployment-specific health and integrity checks |
+| `checks/` | Deployment-specific health and integrity checks (`runtime`, `policy`, `underlay`, `integrity`, …) |
 | `management.py` | Service controls and peer/config transactions |
 | `telemetry.py` | Local metrics, reports and alert handoff |
 | `simplex_sender.py` | Ygg-only durable native-recorded handoff, fail-closed ambiguity |

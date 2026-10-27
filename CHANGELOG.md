@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+- Split the flat `telemetry.py` and `checks.py` runtime modules into packages
+  (`telemetry/`, `checks/`) with the same `import telemetry` / `import checks`
+  entrypoints. Root integrity coverage now lists the package members instead of
+  the two monolithic files; external manifests must be updated accordingly.
+  See `tools/package_split.py` for the mechanical layout.
+
 - Refactor stored-history `trend` aggregation into named steps (`trend_window`,
   `trend_report`, `trend_peer_series`, `trend_verdict`, and related helpers)
   without changing comparison rules, thresholds, reasons or verdict selection.
