@@ -42,9 +42,7 @@ def components(keys, edges):
     return sorted(sizes.values(), reverse=True)
 
 
-@logged
-def build(store, run=None):
-    run = run or store.meta("current")
+def build_catalogue_context(store, run):
     if run:
         rows = store.sql("SELECT seed FROM runs WHERE id=?", (run,))
         if not rows:
@@ -61,72 +59,77 @@ def build(store, run=None):
         ]
         meta = store.meta("catalogue")
         progress = {"run": None, "world_coverage": None}
-    nodes: dict[str, dict[str, Any]] = {}
-    relations: dict[tuple[str, str, str], dict[str, Any]] = {}
+    return seed, catalogue, meta, progress
+
+
+def build_run_observations(store, run, seed, nodes, relations):
     method_rows, responders = {}, set()
-    if run:
-        for key, origin in store.sql("SELECT key,origin FROM targets WHERE run=?", (run,)):
-            nodes[model.public_key(key)] = {"roles": {origin}, "methods": {}}
-        own = seed["local"]["observations"]["self"]["key"]
-        nodes[own] = {"roles": {"local_self"}, "methods": {}}
-        for edge in model.graph(seed["local"])["edges"]:
-            kind = "local_direct_peer" if edge["kind"] == "direct_peer" else "local_tree_parent"
-            token = (kind, edge["source"], edge["target"])
-            relations[token] = dict(
-                edge, kind=kind, reporters=[own], semantics="local admin observation, not atomic"
-            )
-        for key, method, ts, status, elapsed, raw in store.sql(
-            "SELECT key,method,ts,status,elapsed_ms,payload FROM responses WHERE run=?", (run,)
+    for key, origin in store.sql("SELECT key,origin FROM targets WHERE run=?", (run,)):
+        nodes[model.public_key(key)] = {"roles": {origin}, "methods": {}}
+    own = seed["local"]["observations"]["self"]["key"]
+    nodes[own] = {"roles": {"local_self"}, "methods": {}}
+    for edge in model.graph(seed["local"])["edges"]:
+        kind = "local_direct_peer" if edge["kind"] == "direct_peer" else "local_tree_parent"
+        token = (kind, edge["source"], edge["target"])
+        relations[token] = dict(
+            edge, kind=kind, reporters=[own], semantics="local admin observation, not atomic"
+        )
+    for key, method, ts, status, elapsed, raw in store.sql(
+        "SELECT key,method,ts,status,elapsed_ms,payload FROM responses WHERE run=?", (run,)
+    ):
+        key = model.public_key(key)
+        model.instant(ts)
+        if method not in acquisition.protocol.METHODS or status not in (
+            "ok",
+            "unknown",
+            "inflight",
+            "interrupted_unknown",
         ):
-            key = model.public_key(key)
-            model.instant(ts)
-            if method not in acquisition.protocol.METHODS or status not in (
-                "ok",
-                "unknown",
-                "inflight",
-                "interrupted_unknown",
-            ):
-                raise Failure("atlas_invalid_response_status")
-            if elapsed is not None and (
-                type(elapsed) not in (int, float)
-                or not math.isfinite(elapsed)
-                or not 0 <= elapsed <= 86400000
-            ):
-                raise Failure("atlas_invalid_response_elapsed")
-            nodes[key]["methods"][method] = {
-                "status": status,
-                "observed": ts,
-                "api_elapsed_ms": elapsed,
-            }
-            data = acquisition.payload(raw, key, method) if status == "ok" else None
-            method_rows[(key, method)] = (status, data)
-            if not data:
-                continue
-            responders.add(key)
-            nodes[key]["roles"].add("validated_payload_respondent")
-            if method == "self":
-                nodes[key]["routing_entries"] = data["routing_entries"]
-            else:
-                for other in data["keys"]:
-                    nodes.setdefault(other, {"roles": set(), "methods": {}})["roles"].add(
-                        "remote_" + method + "_reference"
-                    )
-                    if method != "peers" or other == key:
-                        continue
-                    source, target = sorted((key, other))
-                    token = ("reported_peer", source, target)
-                    edge = relations.setdefault(
-                        token,
-                        {
-                            "kind": "reported_peer",
-                            "source": source,
-                            "target": target,
-                            "reporters": [],
-                            "semantics": "remote claim; NO up/latency/completeness proof",
-                        },
-                    )
-                    if key not in edge["reporters"]:
-                        edge["reporters"].append(key)
+            raise Failure("atlas_invalid_response_status")
+        if elapsed is not None and (
+            type(elapsed) not in (int, float)
+            or not math.isfinite(elapsed)
+            or not 0 <= elapsed <= 86400000
+        ):
+            raise Failure("atlas_invalid_response_elapsed")
+        nodes[key]["methods"][method] = {
+            "status": status,
+            "observed": ts,
+            "api_elapsed_ms": elapsed,
+        }
+        data = acquisition.payload(raw, key, method) if status == "ok" else None
+        method_rows[(key, method)] = (status, data)
+        if not data:
+            continue
+        responders.add(key)
+        nodes[key]["roles"].add("validated_payload_respondent")
+        if method == "self":
+            nodes[key]["routing_entries"] = data["routing_entries"]
+        else:
+            for other in data["keys"]:
+                nodes.setdefault(other, {"roles": set(), "methods": {}})["roles"].add(
+                    "remote_" + method + "_reference"
+                )
+                if method != "peers" or other == key:
+                    continue
+                source, target = sorted((key, other))
+                token = ("reported_peer", source, target)
+                edge = relations.setdefault(
+                    token,
+                    {
+                        "kind": "reported_peer",
+                        "source": source,
+                        "target": target,
+                        "reporters": [],
+                        "semantics": "remote claim; NO up/latency/completeness proof",
+                    },
+                )
+                if key not in edge["reporters"]:
+                    edge["reporters"].append(key)
+    return responders
+
+
+def build_catalogue_geography(catalogue, nodes):
     geography: dict[str, set[str]] = {}
     transports: dict[str, int] = {}
     countries: dict[str, dict[str, Any]] = {}
@@ -163,6 +166,10 @@ def build(store, run=None):
             for pin in record["pins"]:
                 geography.setdefault(pin, set()).add(country)
     countries = {c: dict(v, pin_keys=len(v["pin_keys"])) for c, v in sorted(countries.items())}
+    return geography, transports, countries, unknown_pin_endpoints
+
+
+def build_node_rows(nodes, relations, geography):
     edges = [relations[k] for k in sorted(relations)]
     adjacency: dict[str, set[str]] = {key: set() for key in nodes}
     for edge in edges:
@@ -182,6 +189,10 @@ def build(store, run=None):
                 asn=None,
             )
         )
+    return edges, node_rows
+
+
+def build_method_timing(node_rows):
     timing = {}
     for method in acquisition.protocol.METHODS:
         rows = [n["methods"][method] for n in node_rows if method in n["methods"]]
@@ -196,6 +207,23 @@ def build(store, run=None):
             ),
             "semantics": "mesh + local admin/client + responder processing, NOT transport RTT/uptime",
         }
+    return timing
+
+
+@logged
+def build(store, run=None):
+    run = run or store.meta("current")
+    seed, catalogue, meta, progress = build_catalogue_context(store, run)
+    nodes: dict[str, dict[str, Any]] = {}
+    relations: dict[tuple[str, str, str], dict[str, Any]] = {}
+    responders = set()
+    if run:
+        responders = build_run_observations(store, run, seed, nodes, relations)
+    geography, transports, countries, unknown_pin_endpoints = build_catalogue_geography(
+        catalogue, nodes
+    )
+    edges, node_rows = build_node_rows(nodes, relations, geography)
+    timing = build_method_timing(node_rows)
     return {
         "schema": 1,
         "generated": timestamp(),

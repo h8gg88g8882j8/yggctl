@@ -89,9 +89,7 @@ class ConsoleTests(ConsoleFixture):
                 for name in (
                     "main.py",
                     "core.py",
-                    "checks.py",
                     "management.py",
-                    "telemetry.py",
                     "recovery.py",
                     "tests.py",
                     "test_support.py",
@@ -99,6 +97,31 @@ class ConsoleTests(ConsoleFixture):
                     "sandbox.py",
                     "broker.py",
                     "simplex_sender.py",
+                )
+            ),
+            *(
+                self.paths.runtime / "checks" / name
+                for name in (
+                    "__init__.py",
+                    "check.py",
+                    "display.py",
+                    "integrity.py",
+                    "policy.py",
+                    "runtime.py",
+                    "underlay.py",
+                )
+            ),
+            *(
+                self.paths.runtime / "telemetry" / name
+                for name in (
+                    "__init__.py",
+                    "patchable.py",
+                    "peers.py",
+                    "storage.py",
+                    "alerts.py",
+                    "notify.py",
+                    "collect.py",
+                    "trend.py",
                 )
             ),
             *(

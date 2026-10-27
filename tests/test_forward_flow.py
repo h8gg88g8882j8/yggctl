@@ -99,7 +99,7 @@ telemetry.forward(Context(Paths(state=Path(sys.argv[2])), sender, require_root=F
                 "-B",
                 "-c",
                 script,
-                str(Path(telemetry.__file__).resolve().parent),
+                str(Path(telemetry.__file__).resolve().parent.parent),
                 str(self.paths.state),
             ],
             capture_output=True,
