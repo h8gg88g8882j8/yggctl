@@ -296,7 +296,7 @@ API = _API()
 '''
     )
     for path in pkg.glob("*.py"):
-        if path.name in ("__init__.py", "patchable.py", "peers.py", "storage.py"):
+        if path.name in ("__init__.py", "patchable.py", "peers.py"):
             continue
         text = path.read_text()
         if "from .patchable import API" not in text:

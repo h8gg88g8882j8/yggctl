@@ -39,9 +39,11 @@ from .policy import trusted, state_member
 
 @logged
 def integrity(ctx):
+    import checks as checks_pkg
+
     if "integrity" in ctx.parent_verified:
         return 0
-    manifest = read_regular(ctx.p.etc / "integrity.manifest").decode()
+    manifest = checks_pkg.read_regular(ctx.p.etc / "integrity.manifest").decode()
     checked = set()
     for line in manifest.splitlines():
         m = re.fullmatch(r"([0-9a-f]{64})  (.+)", line)
@@ -53,8 +55,10 @@ def integrity(ctx):
         if path in checked:
             raise Failure("duplicate_integrity_member")
         if ctx.require_root:
-            trusted(path)
-        if digest(read_regular(path, limit=256 * 1024 * 1024)) != m[1]:
+            import checks as checks_pkg
+
+            checks_pkg.trusted(path)
+        if digest(checks_pkg.read_regular(path, limit=256 * 1024 * 1024)) != m[1]:
             raise Failure("integrity_mismatch")
         checked.add(path)
     required = {
@@ -74,9 +78,7 @@ def integrity(ctx):
             Path("/usr/bin/yggctl"),
             ctx.p.runtime / "main.py",
             ctx.p.runtime / "core.py",
-            ctx.p.runtime / "checks.py",
             ctx.p.runtime / "management.py",
-            ctx.p.runtime / "telemetry.py",
             ctx.p.runtime / "recovery.py",
             ctx.p.runtime / "tests.py",
             ctx.p.runtime / "test_support.py",
@@ -94,6 +96,31 @@ def integrity(ctx):
         }
         required.add(ctx.p.etc / "baseline-runtime-public.txt")
         required.add(ctx.p.etc / "baseline-nft-mullvad.txt")
+        required |= {
+            ctx.p.runtime / "checks" / n
+            for n in (
+                "__init__.py",
+                "check.py",
+                "display.py",
+                "integrity.py",
+                "policy.py",
+                "runtime.py",
+                "underlay.py",
+            )
+        }
+        required |= {
+            ctx.p.runtime / "telemetry" / n
+            for n in (
+                "__init__.py",
+                "patchable.py",
+                "peers.py",
+                "storage.py",
+                "alerts.py",
+                "notify.py",
+                "collect.py",
+                "trend.py",
+            )
+        }
         required |= {
             ctx.p.runtime / "research" / n
             for n in ("__init__.py", "model.py", "metrics.py", "tests.py")

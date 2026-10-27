@@ -208,7 +208,9 @@ def underlay(ctx):
 @logged
 def guard(ctx):
     if ctx.require_root:
-        state_custody(ctx)
+        import checks as checks_pkg
+
+        checks_pkg.state_custody(ctx)
     for name in ("yggdrasil-lab.conf", "yggstack.conf"):
         config = ctx.config(name)
         if safe_config(config):

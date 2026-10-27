@@ -136,61 +136,65 @@ def state_custody(ctx):
         ("notify.state", 0o644),
     ):
         checks_pkg.state_member(root / name, mode=mode, optional=True)
-    event("state", "state_custody", "existing_permissions_accepted_no_repair")
+    checks_pkg.event("state", "state_custody", "existing_permissions_accepted_no_repair")
 
 @logged
 def nft_relay_gate(ctx, expected, observed):
+    import checks as checks_pkg
+
     path = ctx.p.etc / "baseline-nft-mullvad.txt"
     if ctx.require_root:
-        trusted(path)
+        checks_pkg.trusted(path)
     try:
-        reference = read_regular(path, limit=65536)
+        reference = checks_pkg.read_regular(path, limit=65536)
     except OSError:
         raise Failure("mullvad_reference_unavailable") from None
     if digest(reference) != expected:
         raise Failure("mullvad_reference_not_accepted_baseline")
-    relay = quic_relay(ctx.run(["/usr/bin/mullvad", "status", "--json"]).stdout)
+    relay = checks_pkg.quic_relay(ctx.run(["/usr/bin/mullvad", "status", "--json"]).stdout)
     current = ctx.run(["/usr/sbin/nft", "list", "table", "inet", "mullvad"]).stdout
     if digest(current) != observed:
         raise Failure("mullvad_display_changed_during_check")
-    if not relay_display(reference, current, relay):
+    if not checks_pkg.relay_display(reference, current, relay):
         command = ["/usr/sbin/ip", "-j", "addr", "show", "dev", "wg0-mullvad"]
-        before = tunnel_addresses(ctx.run(command).stdout)
+        before = checks_pkg.tunnel_addresses(ctx.run(command).stdout)
         current = ctx.run(["/usr/sbin/nft", "list", "table", "inet", "mullvad"]).stdout
         if digest(current) != observed:
             raise Failure("mullvad_display_changed_during_check")
-        if not relay_display(reference, current, relay, before):
+        if not checks_pkg.relay_display(reference, current, relay, before):
             raise Failure("policy_baseline_drift_do_not_auto_accept")
-        if tunnel_addresses(ctx.run(command).stdout) != before:
+        if checks_pkg.tunnel_addresses(ctx.run(command).stdout) != before:
             raise Failure("mullvad_interface_changed_during_check")
-    if quic_relay(ctx.run(["/usr/bin/mullvad", "status", "--json"]).stdout) != relay:
+    if checks_pkg.quic_relay(ctx.run(["/usr/bin/mullvad", "status", "--json"]).stdout) != relay:
         raise Failure("mullvad_relay_changed_during_check")
-    event("state", "mullvad_policy", "legacy_anchored_local_quic_and_tunnel_addresses")
+    checks_pkg.event("state", "mullvad_policy", "legacy_anchored_local_quic_and_tunnel_addresses")
 
 @logged
 def policy_gate(ctx):
-    expected = baseline(ctx)
-    observed = policy(ctx)
+    import checks as checks_pkg
+
+    expected = checks_pkg.baseline(ctx)
+    observed = checks_pkg.policy(ctx)
     if observed["FW_PERMANENT_SHA"] != expected["FW_PERMANENT_SHA"]:
         raise Failure("policy_baseline_drift_do_not_auto_accept")
     if observed["NFT_MULLVAD_SHA"] != expected["NFT_MULLVAD_SHA"]:
         nft_relay_gate(ctx, expected["NFT_MULLVAD_SHA"], observed["NFT_MULLVAD_SHA"])
     if observed["FW_RUNTIME_SHA"] == expected["FW_RUNTIME_SHA"]:
-        event("state", "runtime_policy", "exact_legacy_hash")
+        checks_pkg.event("state", "runtime_policy", "exact_legacy_hash")
         return
     # Legacy SHA is authoritative; never enroll a current observation as accepted.
     path = ctx.p.etc / "baseline-runtime-public.txt"
     if ctx.require_root:
-        trusted(path)
-    reference = read_regular(path, limit=65536)
+        checks_pkg.trusted(path)
+    reference = checks_pkg.read_regular(path, limit=65536)
     if digest(reference) != expected["FW_RUNTIME_SHA"]:
         raise Failure("runtime_reference_not_accepted_baseline")
     current = ctx.run(["/usr/bin/firewall-cmd", "--zone=public", "--list-all"]).stdout
     if digest(current) != observed["FW_RUNTIME_SHA"]:
         raise Failure("runtime_display_changed_during_check")
-    if runtime_display(reference) != runtime_display(current):
+    if checks_pkg.runtime_display(reference) != checks_pkg.runtime_display(current):
         raise Failure("policy_baseline_drift_do_not_auto_accept")
-    event("state", "runtime_policy", "legacy_anchored_rule_permutation")
+    checks_pkg.event("state", "runtime_policy", "legacy_anchored_rule_permutation")
 
 @logged
 def nft_gate(ctx):

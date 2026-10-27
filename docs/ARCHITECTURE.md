@@ -8,7 +8,7 @@ It is run as a source script; this repository is not a pip distribution.
 | `core.py` | Fixed paths/executables, bounded invocation, shared logging |
 | `checks/` | Deployment-specific health and integrity checks (`runtime`, `policy`, `underlay`, `integrity`, …) |
 | `management.py` | Service controls and peer/config transactions |
-| `telemetry.py` | Local metrics, reports and alert handoff |
+| `telemetry/` | Local metrics, reports and alert handoff (`storage`, `alerts`, `collect`, `trend`, …) |
 | `simplex_sender.py` | Ygg-only durable native-recorded handoff, fail-closed ambiguity |
 | `recovery.py` | Deployment-specific backup and recovery operations |
 | `sandbox.py`, `broker.py` | Worker launch, mandatory integrity gate and role-scoped admin reads |

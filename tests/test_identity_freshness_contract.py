@@ -125,13 +125,13 @@ class IdentityFreshnessContract(ConsoleFixture):
         # accesses in maintained runtime functions, including newly added ones.
         # Existing projected metrics and schema/transport projection stay valid.
         expected = {
-            "runtime.py:peers": 1,  # Raw schema validation, not availability.
-            "runtime.py:identified": 1,  # The sole raw availability predicate.
-            "alerts.py:peer_alert_sample_peers": 1,  # Projected schema-2 sample.
-            "alerts.py:peer_alert_track_observed_peer": 1,  # Per-label transitions.
-            "collect.py:collect": 2,  # Its own projected sample, not raw rows.
-            "alerts.py:reconnects": 1,  # Persisted projected observations.
-            "collect.py:stats": 4,  # Persisted projected observations.
+            "checks/runtime.py:peers": 1,  # Raw schema validation, not availability.
+            "checks/runtime.py:identified": 1,  # The sole raw availability predicate.
+            "telemetry/alerts.py:peer_alert_sample_peers": 1,  # Projected schema-2 sample.
+            "telemetry/alerts.py:peer_alert_track_observed_peer": 1,  # Per-label transitions.
+            "telemetry/collect.py:collect": 2,  # Its own projected sample, not raw rows.
+            "telemetry/alerts.py:reconnects": 1,  # Persisted projected observations.
+            "telemetry/collect.py:stats": 4,  # Persisted projected observations.
             "research/metrics.py:summary_tally_peers": 5,  # Persisted projected observations.
             "research/metrics.py:summary_peer_results": 1,  # Availability ratio fold.
             "research/model.py:project": 2,  # Typed transport projection.
@@ -142,12 +142,12 @@ class IdentityFreshnessContract(ConsoleFixture):
             # are not raw availability/key identity claims. The aggregation was split
             # into named helpers, so the same three accesses are counted where they now
             # live: the per-sample read and the two per-label folds.
-            "trend.py:trend_sample_series": 1,
-            "trend.py:trend_accumulate": 4,
-            "trend.py:trend_peer_details": 1,
-            "trend.py:trend_peer": 2,
+            "telemetry/trend.py:trend_sample_series": 1,
+            "telemetry/trend.py:trend_accumulate": 4,
+            "telemetry/trend.py:trend_peer_details": 1,
+            "telemetry/trend.py:trend_peer": 2,
         }
-        root = Path(checks.__file__).parent
+        root = Path(checks.__file__).resolve().parent.parent
         found: Counter[str] = Counter()
         for path in root.rglob("*.py"):
             if path.name in ("tests.py", "test_support.py", "alert_tests.py"):

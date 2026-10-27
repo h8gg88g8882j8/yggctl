@@ -33,6 +33,7 @@ import simplex_sender
 
 
 from .peers import peer_label
+from .patchable import API
 
 ALERT_RETENTION_KIND = "ygg-queue-retention"
 
@@ -72,7 +73,7 @@ MESSAGES = {
 
 @logged
 def rows(ctx, name="metrics.jsonl"):
-    data = ctx.read_state(name, METRICS_LIMIT)
+    data = ctx.read_state(name, API.METRICS_LIMIT)
     if data is None:
         return []
     # An append in progress (or one torn by a crash) leaves an incomplete last line; skip it.
@@ -109,7 +110,7 @@ def metric_records(fd, size):
 def metric_compact(ctx, name, row, keep, appended=False):
     """Newest complete records, bounded by BOTH count and bytes, including new row."""
     line = (json.dumps(row, separators=(",", ":")) + "\n").encode()
-    if len(line) > METRICS_LIMIT:
+    if len(line) > API.METRICS_LIMIT:
         raise Failure("metric_record_size_limit")
     values = rows(ctx, name)
     if appended:
@@ -120,11 +121,11 @@ def metric_compact(ctx, name, row, keep, appended=False):
     retained, size = [line], len(line)
     for previous in reversed(values[-(keep - 1) :] if keep > 1 else []):
         encoded = (json.dumps(previous, separators=(",", ":")) + "\n").encode()
-        if size + len(encoded) > METRICS_LIMIT:
+        if size + len(encoded) > API.METRICS_LIMIT:
             break
         retained.append(encoded)
         size += len(encoded)
-    atomic(ctx.p.state / name, b"".join(reversed(retained)), 0o640)
+    API.atomic(ctx.p.state / name, b"".join(reversed(retained)), 0o640)
     event("state", "metric_append", "compacted_by_byte_or_record_bound")
 
 @logged
@@ -192,10 +193,10 @@ def compact_alerts(ctx, values, row, keep):
     encoded = [(json.dumps(item, separators=(",", ":")) + "\n").encode() for item in ordinary]
     sent = set(forwarded_ids(ctx) or ())
 
-    start = alert_suffix(encoded, keep, METRICS_LIMIT)
+    start = alert_suffix(encoded, keep, API.METRICS_LIMIT)
     initial_evictions = sum(alert_id(item) not in sent for item in ordinary[:start])
     if previous is None and not initial_evictions:
-        atomic(ctx.p.state / "alerts.jsonl", b"".join(encoded[start:]), 0o640)
+        API.atomic(ctx.p.state / "alerts.jsonl", b"".join(encoded[start:]), 0o640)
         event("state", "metric_append", "compacted_by_byte_or_record_bound")
         return
 
@@ -208,9 +209,9 @@ def compact_alerts(ctx, values, row, keep):
         "evicted_uncheckpointed_total": ALERT_RETENTION_MAX,
     }
     reserved = len((json.dumps(maximal, separators=(",", ":")) + "\n").encode())
-    if reserved + len(encoded[-1]) > METRICS_LIMIT:
+    if reserved + len(encoded[-1]) > API.METRICS_LIMIT:
         raise Failure("alert_retention_capacity")
-    start = alert_suffix(encoded, keep, METRICS_LIMIT - reserved)
+    start = alert_suffix(encoded, keep, API.METRICS_LIMIT - reserved)
     total = old_total + sum(alert_id(item) not in sent for item in ordinary[:start])
     if total > ALERT_RETENTION_MAX:
         raise Failure("alert_retention_overflow")
@@ -220,7 +221,7 @@ def compact_alerts(ctx, values, row, keep):
         "evicted_uncheckpointed_total": total,
     }
     marker = (json.dumps(notice, separators=(",", ":")) + "\n").encode()
-    atomic(ctx.p.state / "alerts.jsonl", marker + b"".join(encoded[start:]), 0o640)
+    API.atomic(ctx.p.state / "alerts.jsonl", marker + b"".join(encoded[start:]), 0o640)
     event("state", "metric_append", "compacted_by_byte_or_record_bound")
 
 @logged
@@ -232,7 +233,7 @@ def append(ctx, name, row, keep=METRIC_RETENTION):
         raise Failure("alert_retention_reserved")
     path = ctx.p.state / name
     line = (json.dumps(row, separators=(",", ":")) + "\n").encode()
-    if len(line) > METRICS_LIMIT:
+    if len(line) > API.METRICS_LIMIT:
         raise Failure("metric_record_size_limit")
     with ctx.locked():
         fd = os.open(
@@ -242,7 +243,7 @@ def append(ctx, name, row, keep=METRIC_RETENTION):
             info = os.fstat(fd)
             if not stat.S_ISREG(info.st_mode):
                 raise Failure("metric_file_not_regular")
-            if info.st_size + len(line) > METRICS_LIMIT:
+            if info.st_size + len(line) > API.METRICS_LIMIT:
                 metric_compact(ctx, name, row, keep)
                 os.chown(path, -1, ctx.p.state.stat().st_gid)
                 return

@@ -35,43 +35,35 @@ from core import (
 # There is no runtime override: this project fixes paths, units and thresholds in code
 # and deliberately reads no environment variables.
 
-from .runtime import (
-    collector_freshness,
-    peer_gate,
-    multicast_gate,
-    tun_gate,
-    service_gate,
-    timer_gate,
-)
-from .policy import policy_gate, nft_gate, masked_gate, state_custody
-from .underlay import underlay, guard, sockets
-from .display import relay_display, tunnel_addresses, runtime_display
-
 @logged
 def check(ctx, emit=True):
+    import checks as checks_pkg
+
     ctx.root()
     gates = [
-        ("config/keys/admin", guard),
-        ("integrity/root trust", integrity),
-        ("listeners", sockets),
-        ("underlay own sockets", underlay),
+        ("config/keys/admin", checks_pkg.guard),
+        ("integrity/root trust", checks_pkg.integrity),
+        ("listeners", checks_pkg.sockets),
+        ("underlay own sockets", checks_pkg.underlay),
     ]
     for u in (NODE, STACK):
-        gates.append((u, lambda c, u=u: service_gate(c, u)))
+        gates.append((u, lambda c, u=u: checks_pkg.service_gate(c, u)))
     for stack in (False, True):
-        gates.append(("stack peers" if stack else "node peers", lambda c, s=stack: peer_gate(c, s)))
+        gates.append(
+            ("stack peers" if stack else "node peers", lambda c, s=stack: checks_pkg.peer_gate(c, s))
+        )
         gates.append(
             (
                 "stack no multicast" if stack else "node no multicast",
-                lambda c, s=stack: multicast_gate(c, s),
+                lambda c, s=stack: checks_pkg.multicast_gate(c, s),
             )
         )
     gates += [
-        ("no TUN", tun_gate),
-        ("firewall baseline", policy_gate),
-        ("no transient gates", nft_gate),
-        ("packaged masked", masked_gate),
-        ("collector timer", timer_gate),
+        ("no TUN", checks_pkg.tun_gate),
+        ("firewall baseline", checks_pkg.policy_gate),
+        ("no transient gates", checks_pkg.nft_gate),
+        ("packaged masked", checks_pkg.masked_gate),
+        ("collector timer", checks_pkg.timer_gate),
     ]
     failures = []
     start = time.monotonic()
