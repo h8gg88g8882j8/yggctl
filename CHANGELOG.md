@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- Refactor stored-history `trend` aggregation into named steps (`trend_window`,
+  `trend_report`, `trend_peer_series`, `trend_verdict`, and related helpers)
+  without changing comparison rules, thresholds, reasons or verdict selection.
+
 - Do not compare stored-history trends for a sanitized peer label that covers
   more than one link. Two WebSocket paths at one endpoint (or an option the
   sanitizer drops) render to one label, and the trend previously fused their
