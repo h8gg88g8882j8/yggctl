@@ -39,8 +39,8 @@ def peer_identity(value):
     return label, key
 
 
-@logged
-def summary(records, hours, now):
+def summary_window_records(records, hours, now):
+    """Accept records inside the window; downgrade duplicate timestamps."""
     if type(hours) is not int or not 1 <= hours <= 72:
         raise Failure("research_invalid_window")
     if not isinstance(records, list) or len(records) > METRIC_RECORD_LIMIT:
@@ -73,8 +73,11 @@ def summary(records, hours, now):
         valid.append((at, r))
     valid.sort(key=lambda pair: pair[0])
     slots = {min(hours * 60 - 1, int((at - begin).total_seconds() / 60)) for at, _ in valid}
-    all_ids: dict[str, Any] = {}
-    cache: dict[str, tuple[str, str | None]] = {}
+    return begin, end, valid, invalid, outside, duplicates, slots
+
+
+def summary_tally_peers(valid, all_ids, cache):
+    """One pass over valid records: per-endpoint counters and peer-row limits."""
     unknown_records, invalid_peers, peer_rows = 0, 0, 0
     for at, r in valid:
         known_record = (
@@ -146,6 +149,10 @@ def summary(records, hours, now):
                         counters["missing_latency"] += 1
                     else:
                         counters["latencies"].append(ms)
+    return unknown_records, invalid_peers
+
+
+def summary_peer_results(all_ids, valid, unknown_records):
     results, pooled = [], []
     for label in sorted(all_ids):
         counters = all_ids[label]
@@ -169,6 +176,18 @@ def summary(records, hours, now):
                 "missing_or_invalid_latency_on_up": counters["missing_latency"],
             }
         )
+    return results, pooled
+
+
+@logged
+def summary(records, hours, now):
+    begin, end, valid, invalid, outside, duplicates, slots = summary_window_records(
+        records, hours, now
+    )
+    all_ids: dict[str, Any] = {}
+    cache: dict[str, tuple[str, str | None]] = {}
+    unknown_records, invalid_peers = summary_tally_peers(valid, all_ids, cache)
+    results, pooled = summary_peer_results(all_ids, valid, unknown_records)
     return {
         "window_start": begin.isoformat(),
         "window_end": end.isoformat(),

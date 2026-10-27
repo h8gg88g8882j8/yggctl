@@ -463,97 +463,95 @@ def stage_health_alert(ctx, sample):
     event("state", "health_outbox", "staged")
 
 
-@logged
-def stage_peer_alerts(ctx, sample, uptimes=None):
-    """Changes worth an alert: a peer down for PEER_DOWN_MINUTES, its recovery, and a peer
-    that reconnected UNSTABLE_RECONNECTS times within an hour (from the node's per-peer
-    uptime, which also catches drops shorter than the sampling interval). State lives in
-    alert-state.json and is rewritten only when something changes. The caller holds
-    ctx.locked(). When notifications are enabled, events and transitions are saved
-    together in that one atomic file, before anything is appended to the queue."""
-    state = load_peer_state(ctx)
-    # A failed query is not an observed empty peer set. Retain both tracking and
-    # pending content; collect may still replay the durable outbox independently.
-    # Legacy direct callers supplying an actual peer list remain observed.
+def peer_alert_retain_unobserved(ctx, state, sample):
+    """Keep durable tracking when the peer list was not observed this sample."""
     if sample.get("peers_observed", True) is not True:
         if not state.get("observation_gap"):
             state["observation_gap"] = True
             save_peer_state(ctx, state)
         event("state", "peer_observation", "unknown_tracking_retained")
-        return []
-    gap = bool(state.get("observation_gap"))
-    down = state.get("down", {}) if isinstance(state.get("down"), dict) else {}
-    starts = state.get("starts", {}) if isinstance(state.get("starts"), dict) else {}
-    unstable = state.get("unstable", {}) if isinstance(state.get("unstable"), dict) else {}
+        return True
+    return False
+
+
+def peer_alert_sample_peers(sample, uptimes):
+    """Label peers for this sample and split ambiguous labels from comparable ones."""
     now = dt.datetime.fromisoformat(sample["ts"])
     peers = [
         dict(p, r=peer_label(p["r"]))
         for p in sample.get("peers", [])
         if isinstance(p.get("r"), str) and p.get("r")
     ]
-    uptimes = {peer_label(k): v for k, v in (uptimes or {}).items()}
+    labeled_uptimes = {peer_label(k): v for k, v in (uptimes or {}).items()}
     ambiguous = ambiguous_peer_labels(peers)
     up, total = sum(bool(p.get("up")) for p in peers), len(peers)
-    changes, tracked = [], {}
     observed = [p for p in peers if p["r"] not in ambiguous]
-    # Do not let one link recover another link's episode or teach its uptime.
-    # Retain durable tracking across ambiguity, just as across a missing query,
-    # without withholding observations for unrelated unambiguous peers.
+    return now, labeled_uptimes, ambiguous, up, total, observed
+
+
+def peer_alert_retain_ambiguous(down, ambiguous, tracked):
+    """Do not let one link recover another's episode; retain tracking across ambiguity."""
     for label in ambiguous:
         if isinstance(down.get(label), dict):
             tracked[label] = dict(down[label], observation_gap=True)
     if ambiguous:
         event("state", "peer_observation", "ambiguous_labels_tracking_retained")
-    for p in observed:
-        entry = candidate if isinstance(candidate := down.get(p["r"]), dict) else {}
-        try:
-            since = dt.datetime.fromisoformat(entry.get("since", sample["ts"]))
-        except (TypeError, ValueError):
-            since = now
-        uncertain = bool(entry.get("observation_gap")) or gap
-        if uncertain and not entry.get("alerted"):
-            # No uninterrupted downtime can be proved across a missing query.
-            # Keep already-alerted episodes to avoid a duplicate down event,
-            # but start a fresh confirmation interval for unalerted episodes.
-            since = now
-        minutes = max(0, int((now - since).total_seconds() // 60))
-        if p.get("up"):
-            if entry.get("alerted"):
-                changes.append(
-                    {
-                        "kind": "ygg-peer-up",
-                        "peer": p["r"],
-                        "minutes": minutes,
-                        "up": up,
-                        "total": total,
-                    }
-                )
-                if uncertain:
-                    changes[-1]["observation_gap"] = True
-            continue
-        alerted = bool(entry.get("alerted"))
-        if not alerted and minutes >= PEER_DOWN_MINUTES:
+
+
+def peer_alert_track_observed_peer(p, down, gap, now, sample, up, total, changes, tracked):
+    """Apply down/up transitions for one unambiguous peer label."""
+    entry = candidate if isinstance(candidate := down.get(p["r"]), dict) else {}
+    try:
+        since = dt.datetime.fromisoformat(entry.get("since", sample["ts"]))
+    except (TypeError, ValueError):
+        since = now
+    uncertain = bool(entry.get("observation_gap")) or gap
+    if uncertain and not entry.get("alerted"):
+        # No uninterrupted downtime can be proved across a missing query.
+        # Keep already-alerted episodes to avoid a duplicate down event,
+        # but start a fresh confirmation interval for unalerted episodes.
+        since = now
+    minutes = max(0, int((now - since).total_seconds() // 60))
+    if p.get("up"):
+        if entry.get("alerted"):
             changes.append(
                 {
-                    "kind": "ygg-peer-down",
+                    "kind": "ygg-peer-up",
                     "peer": p["r"],
                     "minutes": minutes,
                     "up": up,
                     "total": total,
                 }
             )
-            alerted = True
-        tracked[p["r"]] = {"since": since.isoformat(), "alerted": alerted}
-        if alerted and uncertain:
-            tracked[p["r"]]["observation_gap"] = True
-    new_starts, new_unstable = reconnects(
-        starts, unstable, uptimes or {}, now, observed, up, total, changes
-    )
+            if uncertain:
+                changes[-1]["observation_gap"] = True
+        return
+    alerted = bool(entry.get("alerted"))
+    if not alerted and minutes >= PEER_DOWN_MINUTES:
+        changes.append(
+            {
+                "kind": "ygg-peer-down",
+                "peer": p["r"],
+                "minutes": minutes,
+                "up": up,
+                "total": total,
+            }
+        )
+        alerted = True
+    tracked[p["r"]] = {"since": since.isoformat(), "alerted": alerted}
+    if alerted and uncertain:
+        tracked[p["r"]]["observation_gap"] = True
+
+
+def peer_alert_merge_ambiguous_reconnects(starts, unstable, ambiguous, new_starts, new_unstable):
     for label in ambiguous:
         if label in starts:
             new_starts[label] = starts[label]
         if label in unstable:
             new_unstable[label] = unstable[label]
+
+
+def peer_alert_persist(ctx, state, sample, changes, tracked, new_starts, new_unstable):
     pending = state.get("pending", [])
     enqueue = bool(changes) and notify_state(ctx) == "on"
     if enqueue:
@@ -574,6 +572,40 @@ def stage_peer_alerts(ctx, sample, uptimes=None):
     if new_state != state:
         save_peer_state(ctx, new_state)
         event("state", "peer_outbox", "staged" if enqueue else "tracking_saved")
+
+
+@logged
+def stage_peer_alerts(ctx, sample, uptimes=None):
+    """Changes worth an alert: a peer down for PEER_DOWN_MINUTES, its recovery, and a peer
+    that reconnected UNSTABLE_RECONNECTS times within an hour (from the node's per-peer
+    uptime, which also catches drops shorter than the sampling interval). State lives in
+    alert-state.json and is rewritten only when something changes. The caller holds
+    ctx.locked(). When notifications are enabled, events and transitions are saved
+    together in that one atomic file, before anything is appended to the queue."""
+    state = load_peer_state(ctx)
+    # A failed query is not an observed empty peer set. Retain both tracking and
+    # pending content; collect may still replay the durable outbox independently.
+    # Legacy direct callers supplying an actual peer list remain observed.
+    if peer_alert_retain_unobserved(ctx, state, sample):
+        return []
+    gap = bool(state.get("observation_gap"))
+    down = state.get("down", {}) if isinstance(state.get("down"), dict) else {}
+    starts = state.get("starts", {}) if isinstance(state.get("starts"), dict) else {}
+    unstable = state.get("unstable", {}) if isinstance(state.get("unstable"), dict) else {}
+    now, labeled_uptimes, ambiguous, up, total, observed = peer_alert_sample_peers(
+        sample, uptimes
+    )
+    changes, tracked = [], {}
+    peer_alert_retain_ambiguous(down, ambiguous, tracked)
+    for p in observed:
+        peer_alert_track_observed_peer(p, down, gap, now, sample, up, total, changes, tracked)
+    new_starts, new_unstable = reconnects(
+        starts, unstable, labeled_uptimes, now, observed, up, total, changes
+    )
+    peer_alert_merge_ambiguous_reconnects(
+        starts, unstable, ambiguous, new_starts, new_unstable
+    )
+    peer_alert_persist(ctx, state, sample, changes, tracked, new_starts, new_unstable)
     return changes
 
 

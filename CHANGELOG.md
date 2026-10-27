@@ -6,6 +6,10 @@
   `trend_report`, `trend_peer_series`, `trend_verdict`, and related helpers)
   without changing comparison rules, thresholds, reasons or verdict selection.
 
+- Decompose peer-alert staging, outbound QUIC socket proof, research metric
+  `summary`, and Atlas `build` into the same named-step style (faithful
+  extractions only; no new branches or behavior changes).
+
 - Do not compare stored-history trends for a sanitized peer label that covers
   more than one link. Two WebSocket paths at one endpoint (or an option the
   sanitizer drops) render to one label, and the trend previously fused their

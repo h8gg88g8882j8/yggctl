@@ -267,26 +267,24 @@ def integrity(ctx):
     return len(checked)
 
 
-@logged
-def quic_socket_proof(ctx, pids, socket_lines, conn_lines, mode):
-    """Correlate observed outbound QUIC, own UDP port and ORIGINAL IPv4 tuple.
-
-    This is a sampled state check. It cannot attest prior/future packets or kernel
-    file-descriptor history. Any port-sharing or unmatched own UDP fails closed.
-    """
-    udp_rows = []
+def quic_udp_socket_rows(socket_lines):
+    rows = []
     for line in socket_lines:
         fields = line.split()
         if fields and fields[0] == "udp":
-            udp_rows.append((line, fields))
-    own = [
+            rows.append((line, fields))
+    return rows
+
+
+def quic_own_udp_rows(udp_rows, pids):
+    return [
         (line, fields)
         for line, fields in udp_rows
         if any(re.search(rf"\bpid={pid},", line) for pid in pids)
     ]
-    proof = dict.fromkeys(pids, 0)
-    if not own:
-        return proof
+
+
+def quic_live_peer_targets(ctx, pids):
     targets = {}
     for stack, pid in ((False, pids[0]), (True, pids[1])):
         configured = {}
@@ -317,6 +315,64 @@ def quic_socket_proof(ctx, pids, socket_lines, conn_lines, mode):
                 remote = selector[0]
                 live.add(remote)
         targets[pid] = live
+    return targets
+
+
+def quic_parse_own_udp(fields):
+    try:
+        local_ip, port = fields[4].rsplit(":", 1)
+        if not port.isdecimal() or not 0 < int(port) <= 65535:
+            raise ValueError
+        if local_ip not in UDP_WILDCARD_BINDS:
+            ipaddress.IPv4Address(local_ip)
+    except ValueError:
+        raise Failure("underlay_quic_socket_ambiguous") from None
+    return local_ip, port
+
+
+def quic_conntrack_matches(conn_lines, port, local_ip, pid, targets, mode):
+    matches = []
+    for record in conn_lines:
+        parts = record.split()
+        if not parts or parts[0] != "udp":
+            continue
+        original = re.search(
+            r"\bsrc=([^ ]+) dst=([^ ]+) sport=(\d+) dport=(\d+)(?:\s|$)", record
+        )
+        if not original or original[3] != port:
+            continue
+        src, dst, sport, dport = original.groups()
+        if local_ip not in UDP_WILDCARD_BINDS and src != local_ip:
+            continue
+        try:
+            ipaddress.IPv4Address(src)
+            ipaddress.IPv4Address(dst)
+        except ValueError:
+            raise Failure("underlay_quic_socket_ambiguous") from None
+        marks = re.findall(r"\bmark=(\d+)\b", record)
+        if (
+            f"{dst}:{dport}" not in targets[pid]
+            or len(marks) != 1
+            or (marks[0] == "3905") != (mode == "direct")
+        ):
+            raise Failure("underlay_quic_peer_or_mark_mismatch")
+        matches.append(record)
+    return matches
+
+
+@logged
+def quic_socket_proof(ctx, pids, socket_lines, conn_lines, mode):
+    """Correlate observed outbound QUIC, own UDP port and ORIGINAL IPv4 tuple.
+
+    This is a sampled state check. It cannot attest prior/future packets or kernel
+    file-descriptor history. Any port-sharing or unmatched own UDP fails closed.
+    """
+    udp_rows = quic_udp_socket_rows(socket_lines)
+    own = quic_own_udp_rows(udp_rows, pids)
+    proof = dict.fromkeys(pids, 0)
+    if not own:
+        return proof
+    targets = quic_live_peer_targets(ctx, pids)
     used_ports = set()
     for line, fields in own:
         owners = {int(p) for p in re.findall(r"\bpid=(\d+),", line)}
@@ -328,14 +384,7 @@ def quic_socket_proof(ctx, pids, socket_lines, conn_lines, mode):
         ):
             raise Failure("underlay_quic_socket_ambiguous")
         pid = next(iter(owners))
-        try:
-            local_ip, port = fields[4].rsplit(":", 1)
-            if not port.isdecimal() or not 0 < int(port) <= 65535:
-                raise ValueError
-            if local_ip not in UDP_WILDCARD_BINDS:
-                ipaddress.IPv4Address(local_ip)
-        except ValueError:
-            raise Failure("underlay_quic_socket_ambiguous") from None
+        local_ip, port = quic_parse_own_udp(fields)
         if port in used_ports or any(
             other_line != line and re.search(rf":{re.escape(port)}(?:\s|$)", other_fields[4])
             for other_line, other_fields in udp_rows
@@ -343,32 +392,7 @@ def quic_socket_proof(ctx, pids, socket_lines, conn_lines, mode):
         ):
             raise Failure("underlay_quic_socket_ambiguous")
         used_ports.add(port)
-        matches = []
-        for record in conn_lines:
-            parts = record.split()
-            if not parts or parts[0] != "udp":
-                continue
-            original = re.search(
-                r"\bsrc=([^ ]+) dst=([^ ]+) sport=(\d+) dport=(\d+)(?:\s|$)", record
-            )
-            if not original or original[3] != port:
-                continue
-            src, dst, sport, dport = original.groups()
-            if local_ip not in UDP_WILDCARD_BINDS and src != local_ip:
-                continue
-            try:
-                ipaddress.IPv4Address(src)
-                ipaddress.IPv4Address(dst)
-            except ValueError:
-                raise Failure("underlay_quic_socket_ambiguous") from None
-            marks = re.findall(r"\bmark=(\d+)\b", record)
-            if (
-                f"{dst}:{dport}" not in targets[pid]
-                or len(marks) != 1
-                or (marks[0] == "3905") != (mode == "direct")
-            ):
-                raise Failure("underlay_quic_peer_or_mark_mismatch")
-            matches.append(record)
+        matches = quic_conntrack_matches(conn_lines, port, local_ip, pid, targets, mode)
         if len(matches) != 1:
             raise Failure("underlay_quic_socket_proof_missing_or_ambiguous")
         proof[pid] += 1
